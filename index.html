@@ -1,0 +1,712 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PosturePal Dashboard</title>
+<script src="https://unpkg.com/mqtt@5.10.1/dist/mqtt.min.js"></script>
+<style>
+  :root {
+    --page: #f9f9f7;
+    --surface: #fcfcfb;
+    --ink: #0b0b0b;
+    --ink-2: #52514e;
+    --muted: #898781;
+    --grid: #e1e0d9;
+    --axis: #c3c2b7;
+    --border: rgba(11, 11, 11, 0.10);
+    --series-slouch: #2a78d6;
+    --series-idle: #eb6834;
+    --good: #0ca30c;
+    --warning: #fab219;
+    --critical: #d03b3b;
+    --tint-good: rgba(12, 163, 12, 0.08);
+    --tint-warning: rgba(250, 178, 25, 0.12);
+    --tint-critical: rgba(208, 59, 59, 0.08);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --page: #0d0d0d;
+      --surface: #1a1a19;
+      --ink: #ffffff;
+      --ink-2: #c3c2b7;
+      --muted: #898781;
+      --grid: #2c2c2a;
+      --axis: #383835;
+      --border: rgba(255, 255, 255, 0.10);
+      --series-slouch: #3987e5;
+      --series-idle: #d95926;
+      --tint-good: rgba(12, 163, 12, 0.14);
+      --tint-warning: rgba(250, 178, 25, 0.14);
+      --tint-critical: rgba(208, 59, 59, 0.18);
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--page);
+    color: var(--ink);
+    font: 15px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  main { max-width: 1040px; margin: 0 auto; padding: 20px 16px 48px; }
+  header { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 20px; }
+  header h1 { font-size: 20px; margin: 0; margin-right: auto; }
+  button {
+    font: inherit; color: var(--ink); background: var(--surface);
+    border: 1px solid var(--border); border-radius: 8px; padding: 6px 12px; cursor: pointer;
+  }
+  button:hover { border-color: var(--axis); }
+  button.primary { background: var(--ink); color: var(--page); border-color: var(--ink); }
+  .pill {
+    display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--ink-2);
+    border: 1px solid var(--border); border-radius: 999px; padding: 3px 10px; background: var(--surface);
+  }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
+  .pill[data-state="connected"] .dot { background: var(--good); }
+  .pill[data-state="error"] .dot { background: var(--critical); }
+  .pill[data-state="connecting"] .dot { background: var(--warning); }
+
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 16px; }
+  h2 { font-size: 13px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; color: var(--ink-2); margin: 28px 0 10px; }
+
+  /* Headline: the one thing to read */
+  .hero { display: flex; gap: 16px; align-items: center; border-left: 6px solid var(--muted); padding: 20px; }
+  .hero .icon { font-size: 36px; line-height: 1; flex: none; }
+  .hero h3 { font-size: 24px; margin: 0 0 4px; }
+  .hero p { margin: 0; color: var(--ink-2); }
+  .hero[data-status="critical"] { border-left-color: var(--critical); background: var(--tint-critical); }
+  .hero[data-status="warning"] { border-left-color: var(--warning); background: var(--tint-warning); }
+  .hero[data-status="good"] { border-left-color: var(--good); background: var(--tint-good); }
+
+  .pair { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 12px; }
+  .state-card .label { font-size: 13px; color: var(--ink-2); }
+  .state-card .value { display: flex; align-items: center; gap: 8px; font-size: 20px; font-weight: 600; margin: 4px 0; }
+  .state-card .detail { font-size: 13px; color: var(--ink-2); min-height: 1.4em; }
+  .badge { width: 12px; height: 12px; border-radius: 50%; background: var(--muted); flex: none; }
+  .badge[data-status="good"] { background: var(--good); }
+  .badge[data-status="warning"] { background: var(--warning); }
+  .badge[data-status="critical"] { background: var(--critical); }
+  .state-card button { margin-top: 8px; font-size: 13px; padding: 4px 10px; }
+
+  .tiles { display: grid; grid-template-columns: repeat(5, 1fr); gap: 12px; }
+  .tile .num { font-size: 28px; font-weight: 600; font-variant-numeric: tabular-nums; }
+  .tile .cap { font-size: 13px; color: var(--ink-2); }
+
+  .chart-head { display: flex; align-items: baseline; gap: 16px; flex-wrap: wrap; margin-bottom: 8px; }
+  .chart-head strong { margin-right: auto; }
+  .legend { display: flex; gap: 14px; font-size: 13px; color: var(--ink-2); }
+  .legend span::before {
+    content: ""; display: inline-block; width: 10px; height: 10px; border-radius: 2px;
+    margin-right: 6px; vertical-align: -1px; background: var(--c);
+  }
+  .chart-wrap { position: relative; }
+  #chart { width: 100%; height: 200px; display: block; }
+  #chart text { fill: var(--muted); font-size: 11px; }
+  .tip {
+    position: absolute; pointer-events: none; background: var(--surface); color: var(--ink);
+    border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; font-size: 13px;
+    box-shadow: 0 4px 16px rgba(0,0,0,.12); white-space: nowrap; display: none;
+  }
+  .tip .row { display: flex; align-items: center; gap: 6px; }
+  .tip .sw { width: 8px; height: 8px; border-radius: 2px; }
+
+  .log-head { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .log-head h2 { margin-right: auto; }
+  .table-scroll { max-height: 420px; overflow: auto; }
+  table { width: 100%; border-collapse: collapse; font-size: 14px; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--grid); }
+  th { font-size: 12px; color: var(--ink-2); font-weight: 600; position: sticky; top: 0; background: var(--surface); }
+  td.num { font-variant-numeric: tabular-nums; }
+  .empty { color: var(--muted); text-align: center; padding: 24px; }
+
+  dialog {
+    border: 1px solid var(--border); border-radius: 12px; background: var(--surface); color: var(--ink);
+    padding: 20px; width: min(440px, calc(100vw - 32px));
+  }
+  dialog::backdrop { background: rgba(0,0,0,.4); }
+  dialog h3 { margin: 0 0 12px; }
+  dialog label { display: block; font-size: 13px; color: var(--ink-2); margin-top: 10px; }
+  dialog input[type=text], dialog input[type=password], dialog input[type=number] {
+    width: 100%; font: inherit; padding: 6px 8px; margin-top: 4px; color: var(--ink);
+    background: var(--page); border: 1px solid var(--border); border-radius: 6px;
+  }
+  dialog .check { display: flex; gap: 8px; align-items: center; }
+  dialog .actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px; }
+  .note { font-size: 12px; color: var(--muted); margin-top: 6px; }
+
+  @media (max-width: 760px) {
+    .tiles { grid-template-columns: repeat(2, 1fr); }
+    .pair { grid-template-columns: 1fr; }
+    .hero h3 { font-size: 20px; }
+  }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>🪑 PosturePal</h1>
+    <span class="pill" id="conn" data-state="idle"><span class="dot"></span><span id="connText">Not connected</span></span>
+    <button id="notifyBtn" type="button">Enable notifications</button>
+    <button id="settingsBtn" type="button">Settings</button>
+  </header>
+
+  <section class="card hero" id="hero" data-status="none" aria-live="polite">
+    <div class="icon" id="heroIcon">⏳</div>
+    <div>
+      <h3 id="heroTitle">Waiting for PosturePal…</h3>
+      <p id="heroText">Messages appear here as soon as the device sends one.</p>
+    </div>
+  </section>
+
+  <div class="pair">
+    <div class="card state-card">
+      <div class="label">Posture</div>
+      <div class="value"><span class="badge" id="postureBadge"></span><span id="postureValue">No data yet</span></div>
+      <div class="detail" id="postureDetail"></div>
+    </div>
+    <div class="card state-card">
+      <div class="label">Movement</div>
+      <div class="value"><span class="badge" id="moveBadge"></span><span id="moveValue">No data yet</span></div>
+      <div class="detail" id="moveDetail"></div>
+      <button id="movedBtn" type="button" hidden>I've moved</button>
+    </div>
+  </div>
+
+  <h2>Today</h2>
+  <div class="tiles">
+    <div class="card tile"><div class="num" id="stSlouch">0</div><div class="cap">Slouch alerts</div></div>
+    <div class="card tile"><div class="num" id="stLong">0</div><div class="cap">Long slouches (20 s+)</div></div>
+    <div class="card tile"><div class="num" id="stIdle">0</div><div class="cap">Idle alerts</div></div>
+    <div class="card tile"><div class="num" id="stTime">0m</div><div class="cap">Time slouching (approx.)</div></div>
+    <div class="card tile"><div class="num" id="stFix">–</div><div class="cap">Avg. time to correct</div></div>
+  </div>
+
+  <div class="card" style="margin-top:12px">
+    <div class="chart-head">
+      <strong>Alerts per hour, today</strong>
+      <div class="legend">
+        <span style="--c:var(--series-slouch)">Slouch alerts</span>
+        <span style="--c:var(--series-idle)">Idle alerts</span>
+      </div>
+    </div>
+    <div class="chart-wrap">
+      <svg id="chart" role="img" aria-label="Slouch and idle alerts per hour today"></svg>
+      <div class="tip" id="tip"></div>
+    </div>
+  </div>
+
+  <div class="log-head">
+    <h2>Event log</h2>
+    <button id="exportBtn" type="button">Export CSV</button>
+    <button id="clearBtn" type="button">Clear history</button>
+  </div>
+  <div class="card table-scroll">
+    <table>
+      <thead><tr><th>Time</th><th>Event</th><th>Angle</th></tr></thead>
+      <tbody id="log"></tbody>
+    </table>
+  </div>
+</main>
+
+<dialog id="settings">
+  <form method="dialog" id="settingsForm">
+    <h3>Connection settings</h3>
+    <div class="note">These are already filled in. You normally don't need to change anything here.</div>
+    <label>Broker host
+      <input type="text" name="host" required placeholder="broker.hivemq.com">
+    </label>
+    <label>WebSocket port
+      <input type="number" name="port" required value="8884">
+    </label>
+    <label>Username (leave empty) <input type="text" name="username" autocomplete="off"></label>
+    <label>Password (leave empty) <input type="password" name="password" autocomplete="off"></label>
+    <label>Topic <input type="text" name="topic" required></label>
+    <div class="note">The topic must match <code>mqttTopic</code> in posturepal.c.</div>
+    <label class="check"><input type="checkbox" name="sound"> Play a beep with each alert</label>
+    <div class="actions">
+      <button type="button" id="resetSettings" style="margin-right:auto">Reset to defaults</button>
+      <button type="button" id="cancelSettings">Cancel</button>
+      <button type="submit" class="primary">Save &amp; connect</button>
+    </div>
+  </form>
+</dialog>
+
+<script>
+(() => {
+  // How the firmware (posturepal.c) behaves; used for the approximate timings below.
+  const SLOUCH_ALERT_DELAY_MS = 5000;  // alert fires after a slouch is held this long
+  const CORRECT_HOLD_MS = 3000;        // "Posture Corrected" fires after good posture is held this long
+  const IDLE_SHOW_MS = 10 * 60 * 1000; // device never reports "moving again", so the idle warning expires
+  const STALE_MS = 30 * 60 * 1000;     // a slouch with no correction for this long is probably a device switched off
+  const MAX_EVENTS = 5000;
+
+  const KEY_EVENTS = "posturepal.events";
+  const KEY_CONFIG = "posturepal.config.v2";
+
+  // Built-in connection: HiveMQ's free public broker. No username or password needed.
+  // The topic must match mqttTopic in posturepal.c exactly.
+  const DEFAULT_CONFIG = {
+    host: "broker.hivemq.com",
+    port: 8884,
+    username: "",
+    password: "",
+    topic: "posturepal/maleesha-7k2q/alert",
+    sound: false,
+  };
+  const KEY_IDLE_DISMISSED = "posturepal.idleDismissedAt";
+
+  const TYPES = {
+    slouch:    { label: "Slouching detected",       icon: "🔴" },
+    continued: { label: "Still slouching (20 s+)",  icon: "🔴" },
+    corrected: { label: "Posture corrected",        icon: "🟢" },
+    idle:      { label: "Not moving for 1 min+",    icon: "🟠" },
+    other:     { label: "Other message",            icon: "⚪" },
+  };
+
+  const $ = (id) => document.getElementById(id);
+
+  function load(key, fallback) {
+    try { const v = localStorage.getItem(key); return v ? JSON.parse(v) : fallback; }
+    catch { return fallback; }
+  }
+  function save(key, value) {
+    try { localStorage.setItem(key, JSON.stringify(value)); } catch { /* storage unavailable */ }
+  }
+
+  let events = load(KEY_EVENTS, []);
+  let config = load(KEY_CONFIG, null) || { ...DEFAULT_CONFIG };
+  let idleDismissedAt = load(KEY_IDLE_DISMISSED, 0);
+
+  // ---------- Classifying device messages ----------
+  function classify(message) {
+    const m = String(message || "").toLowerCase();
+    if (m.includes("continued")) return "continued";
+    if (m.includes("incorrect posture")) return "slouch";
+    if (m.includes("corrected")) return "corrected";
+    if (m.includes("idle")) return "idle";
+    return "other";
+  }
+
+  function handlePayload(text, time = Date.now()) {
+    let data;
+    try { data = JSON.parse(text); } catch { data = { message: text }; }
+    const type = classify(data.message);
+    const angle = type === "idle" ? null : (typeof data.angle === "number" ? data.angle : null);
+    const ev = { t: time, type, msg: String(data.message ?? text), angle };
+    events.push(ev);
+    if (events.length > MAX_EVENTS) events = events.slice(-MAX_EVENTS);
+    save(KEY_EVENTS, events);
+    alertUser(ev);
+    render();
+  }
+
+  // ---------- Deriving current state ----------
+  function currentState(now = Date.now()) {
+    let posture = null;  // last slouch/continued/corrected event
+    let episodeStart = null;
+    let lastIdle = null;
+    for (const e of events) {
+      if (e.type === "slouch" || e.type === "continued") {
+        if (!posture || posture.type === "corrected") episodeStart = e;
+        posture = e;
+      } else if (e.type === "corrected") {
+        posture = e;
+        episodeStart = null;
+      } else if (e.type === "idle") {
+        lastIdle = e;
+      }
+    }
+    const slouching = !!posture && posture.type !== "corrected";
+    const stale = slouching && now - posture.t > STALE_MS;
+    const idle = !!lastIdle && lastIdle.t > idleDismissedAt && now - lastIdle.t < IDLE_SHOW_MS;
+    return { posture, episodeStart, slouching: slouching && !stale, stale, lastIdle, idle };
+  }
+
+  // ---------- Formatting ----------
+  const fmtTime = (t) => new Date(t).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+  const fmtShort = (t) => new Date(t).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  function fmtAgo(ms) {
+    const s = Math.max(0, Math.round(ms / 1000));
+    if (s < 60) return "just now";
+    const m = Math.round(s / 60);
+    if (m < 60) return `${m} min ago`;
+    const h = Math.floor(m / 60);
+    return `${h} h ${m % 60} min ago`;
+  }
+  function fmtDuration(ms) {
+    const s = Math.round(ms / 1000);
+    if (s < 60) return `${s}s`;
+    const m = Math.floor(s / 60);
+    if (m < 60) return `${m}m ${s % 60}s`;
+    return `${Math.floor(m / 60)}h ${m % 60}m`;
+  }
+  const fmtAngle = (a) => (a == null ? "–" : `${a.toFixed(1)}°`);
+
+  // ---------- Rendering ----------
+  function render() {
+    const now = Date.now();
+    const st = currentState(now);
+    renderHero(st, now);
+    renderCards(st, now);
+    renderStats(now);
+    renderChart(now);
+    renderLog();
+  }
+
+  function renderHero(st, now) {
+    const hero = $("hero");
+    let status, icon, title, text;
+    if (st.slouching && st.idle) {
+      status = "critical"; icon = "⚠️";
+      title = "You're slouching and not moving";
+      text = "Sit up straight, then stand up and stretch for a minute.";
+    } else if (st.slouching) {
+      status = "critical"; icon = "⚠️";
+      title = st.posture.type === "continued" ? "You're still slouching. Sit up straight" : "You're slouching. Sit up straight";
+      text = `Slouch detected at ${fmtShort(st.episodeStart.t)} (tilt ${fmtAngle(st.posture.angle)}). ` +
+             "This clears once you hold good posture for 3 seconds.";
+    } else if (st.idle) {
+      status = "warning"; icon = "🚶";
+      title = "You haven't moved in a while";
+      text = `No movement detected for over a minute (alert at ${fmtShort(st.lastIdle.t)}). Stand up and stretch.`;
+    } else if (st.posture) {
+      status = st.stale ? "none" : "good";
+      icon = st.stale ? "❔" : "✅";
+      title = st.stale ? "No recent updates" : "Posture looks good";
+      text = st.stale
+        ? `The last message was a slouch alert ${fmtAgo(now - st.posture.t)}. The device may be switched off.`
+        : "No problems right now. Keep it up.";
+    } else {
+      status = "none"; icon = "⏳";
+      title = "Waiting for PosturePal…";
+      text = "Messages appear here as soon as the device sends one.";
+    }
+    hero.dataset.status = status;
+    $("heroIcon").textContent = icon;
+    $("heroTitle").textContent = title;
+    $("heroText").textContent = text;
+    document.title = status === "critical" ? "⚠ Slouching | PosturePal"
+                   : status === "warning" ? "⚠ Move | PosturePal" : "PosturePal Dashboard";
+  }
+
+  function renderCards(st, now) {
+    if (!st.posture) {
+      setState("posture", "none", "No data yet", "");
+    } else if (st.slouching) {
+      setState("posture", "critical", st.posture.type === "continued" ? "Still slouching" : "Slouching",
+        `Since ${fmtShort(st.episodeStart.t)} · tilt ${fmtAngle(st.posture.angle)}`);
+    } else if (st.stale) {
+      setState("posture", "none", "Unknown", `Last slouch alert ${fmtAgo(now - st.posture.t)}`);
+    } else {
+      setState("posture", "good", "Good", `Corrected at ${fmtShort(st.posture.t)} · tilt ${fmtAngle(st.posture.angle)}`);
+    }
+
+    if (st.idle) {
+      setState("move", "warning", "Not moving", `Idle alert at ${fmtShort(st.lastIdle.t)} (${fmtAgo(now - st.lastIdle.t)})`);
+    } else if (st.lastIdle) {
+      setState("move", "good", "OK", `Last idle alert ${fmtAgo(now - st.lastIdle.t)}`);
+    } else {
+      setState("move", events.length ? "good" : "none", events.length ? "OK" : "No data yet",
+        events.length ? "No idle alerts yet" : "");
+    }
+    $("movedBtn").hidden = !st.idle;
+  }
+
+  function setState(prefix, status, value, detail) {
+    $(prefix + "Badge").dataset.status = status;
+    $(prefix + "Value").textContent = value;
+    $(prefix + "Detail").textContent = detail;
+  }
+
+  function startOfToday(now) {
+    const d = new Date(now); d.setHours(0, 0, 0, 0); return d.getTime();
+  }
+
+  function renderStats(now) {
+    const start = startOfToday(now);
+    const today = events.filter((e) => e.t >= start);
+    $("stSlouch").textContent = today.filter((e) => e.type === "slouch").length;
+    $("stLong").textContent = today.filter((e) => e.type === "continued").length;
+    $("stIdle").textContent = today.filter((e) => e.type === "idle").length;
+
+    // Slouch episodes: first alert -> "Posture Corrected". Alerts fire ~5 s into a slouch and the
+    // correction fires ~3 s after sitting up, so shift both ends to approximate the real slouch.
+    let total = 0, fixTotal = 0, fixCount = 0, open = null;
+    for (const e of today) {
+      if ((e.type === "slouch" || e.type === "continued") && open == null) open = e.t - SLOUCH_ALERT_DELAY_MS;
+      else if (e.type === "corrected" && open != null) {
+        const dur = Math.max(0, e.t - CORRECT_HOLD_MS - open);
+        total += dur; fixTotal += dur; fixCount++;
+        open = null;
+      }
+    }
+    if (open != null && now - open < STALE_MS) total += now - open;
+    $("stTime").textContent = fmtDuration(total);
+    $("stFix").textContent = fixCount ? fmtDuration(fixTotal / fixCount) : "–";
+  }
+
+  // ---------- Chart: alerts per hour (stacked bars) ----------
+  const SVG_NS = "http://www.w3.org/2000/svg";
+  function el(name, attrs) {
+    const n = document.createElementNS(SVG_NS, name);
+    for (const k in attrs) n.setAttribute(k, attrs[k]);
+    return n;
+  }
+  // Bar with only its top corners rounded, anchored to the baseline.
+  function topRoundedBar(x, y, w, h, r) {
+    r = Math.min(r, w / 2, h);
+    return `M${x},${y + h}V${y + r}Q${x},${y} ${x + r},${y}H${x + w - r}Q${x + w},${y} ${x + w},${y + r}V${y + h}Z`;
+  }
+
+  let hourly = [];
+  function renderChart(now) {
+    const start = startOfToday(now);
+    hourly = Array.from({ length: 24 }, () => ({ slouch: 0, idle: 0 }));
+    for (const e of events) {
+      if (e.t < start) continue;
+      const h = new Date(e.t).getHours();
+      if (e.type === "slouch") hourly[h].slouch++;
+      else if (e.type === "idle") hourly[h].idle++;
+    }
+
+    const svg = $("chart");
+    const W = svg.clientWidth || 800, H = 200;
+    const m = { top: 8, right: 8, bottom: 22, left: 28 };
+    const iw = W - m.left - m.right, ih = H - m.top - m.bottom;
+    svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+    svg.replaceChildren();
+
+    const maxVal = Math.max(1, ...hourly.map((d) => d.slouch + d.idle));
+    const step = Math.max(1, Math.ceil(maxVal / 4));
+    const yMax = step * Math.ceil(maxVal / step);
+    const y = (v) => m.top + ih - (v / yMax) * ih;
+
+    for (let v = 0; v <= yMax; v += step) {
+      svg.append(el("line", { x1: m.left, x2: W - m.right, y1: y(v), y2: y(v),
+        stroke: v === 0 ? "var(--axis)" : "var(--grid)", "stroke-width": 1 }));
+      const t = el("text", { x: m.left - 6, y: y(v) + 4, "text-anchor": "end" });
+      t.textContent = v;
+      svg.append(t);
+    }
+
+    const band = iw / 24;
+    const bw = Math.max(4, Math.min(24, band * 0.6));
+    const GAP = 2;
+    hourly.forEach((d, h) => {
+      const x = m.left + band * h + (band - bw) / 2;
+      const segs = [["slouch", "var(--series-slouch)"], ["idle", "var(--series-idle)"]].filter(([k]) => d[k] > 0);
+      let base = 0;
+      segs.forEach(([k, color], i) => {
+        const y0 = y(base), y1 = y(base + d[k]);
+        const top = y1;
+        const bottom = y0 - (i > 0 ? GAP : 0);  // surface gap between stacked segments
+        const hgt = Math.max(1, bottom - top);
+        const isTop = i === segs.length - 1;
+        svg.append(isTop
+          ? el("path", { d: topRoundedBar(x, top, bw, hgt, 4), fill: color })
+          : el("rect", { x, y: top, width: bw, height: hgt, fill: color }));
+        base += d[k];
+      });
+      if (h % 3 === 0) {
+        const t = el("text", { x: m.left + band * h + band / 2, y: H - 6, "text-anchor": "middle" });
+        t.textContent = String(h).padStart(2, "0");
+        svg.append(t);
+      }
+      const hit = el("rect", { x: m.left + band * h, y: m.top, width: band, height: ih, fill: "transparent", "data-h": h });
+      svg.append(hit);
+    });
+  }
+
+  function showTip(evt) {
+    const h = evt.target.getAttribute && evt.target.getAttribute("data-h");
+    const tip = $("tip");
+    if (h == null) { tip.style.display = "none"; return; }
+    const d = hourly[+h];
+    const hh = String(h).padStart(2, "0"), nh = String((+h + 1) % 24).padStart(2, "0");
+    tip.innerHTML = `<div style="color:var(--ink-2);margin-bottom:4px">${hh}:00–${nh}:00</div>` +
+      `<div class="row"><span class="sw" style="background:var(--series-slouch)"></span>Slouch alerts <b style="margin-left:auto;padding-left:12px">${d.slouch}</b></div>` +
+      `<div class="row"><span class="sw" style="background:var(--series-idle)"></span>Idle alerts <b style="margin-left:auto;padding-left:12px">${d.idle}</b></div>`;
+    tip.style.display = "block";
+    const wrap = $("chart").getBoundingClientRect();
+    const rect = evt.target.getBoundingClientRect();
+    let left = rect.left - wrap.left + rect.width / 2 + 10;
+    if (left + tip.offsetWidth > wrap.width) left = rect.left - wrap.left - tip.offsetWidth - 10 + rect.width / 2;
+    tip.style.left = `${Math.max(0, left)}px`;
+    tip.style.top = "8px";
+  }
+
+  // ---------- Event log ----------
+  function renderLog() {
+    const body = $("log");
+    body.replaceChildren();
+    const recent = events.slice(-300).reverse();
+    if (!recent.length) {
+      const tr = document.createElement("tr");
+      const td = document.createElement("td");
+      td.colSpan = 3; td.className = "empty";
+      td.textContent = "No events yet. Keep this page open while you wear PosturePal.";
+      tr.append(td); body.append(tr);
+      return;
+    }
+    const today = startOfToday(Date.now());
+    for (const e of recent) {
+      const tr = document.createElement("tr");
+      const tTime = document.createElement("td");
+      tTime.className = "num";
+      tTime.textContent = (e.t < today ? new Date(e.t).toLocaleDateString() + " " : "") + fmtTime(e.t);
+      const tEv = document.createElement("td");
+      const info = TYPES[e.type] || TYPES.other;
+      tEv.textContent = `${info.icon} ${e.type === "other" ? e.msg : info.label}`;
+      const tAng = document.createElement("td");
+      tAng.className = "num";
+      tAng.textContent = fmtAngle(e.angle);
+      tr.append(tTime, tEv, tAng);
+      body.append(tr);
+    }
+  }
+
+  function exportCsv() {
+    const rows = [["timestamp", "event", "message", "angle"]];
+    for (const e of events) {
+      rows.push([new Date(e.t).toISOString(), e.type, e.msg, e.angle ?? ""]);
+    }
+    const csv = rows.map((r) => r.map((c) => `"${String(c).replace(/"/g, '""')}"`).join(",")).join("\n");
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(new Blob([csv], { type: "text/csv" }));
+    a.download = `posturepal-${new Date().toISOString().slice(0, 10)}.csv`;
+    a.click();
+    URL.revokeObjectURL(a.href);
+  }
+
+  // ---------- Notifications & sound ----------
+  function alertUser(ev) {
+    const text = {
+      slouch: ["You're slouching", "Sit up straight."],
+      continued: ["Still slouching", "You've been slouching for over 20 seconds."],
+      idle: ["Time to move", "You haven't moved for over a minute. Stand up and stretch."],
+    }[ev.type];
+    if (!text) return;
+    if ("Notification" in window && Notification.permission === "granted") {
+      try { new Notification(`PosturePal: ${text[0]}`, { body: text[1], tag: "posturepal-" + ev.type }); }
+      catch { /* some browsers only allow notifications from a service worker */ }
+    }
+    if (config && config.sound) beep(ev.type === "idle" ? 520 : 880);
+  }
+
+  let audioCtx;
+  function beep(freq) {
+    try {
+      audioCtx = audioCtx || new AudioContext();
+      const o = audioCtx.createOscillator(), g = audioCtx.createGain();
+      o.frequency.value = freq; o.connect(g); g.connect(audioCtx.destination);
+      g.gain.setValueAtTime(0.15, audioCtx.currentTime);
+      g.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.4);
+      o.start(); o.stop(audioCtx.currentTime + 0.4);
+    } catch { /* audio unavailable */ }
+  }
+
+  function renderNotifyBtn() {
+    const btn = $("notifyBtn");
+    if (!("Notification" in window)) { btn.textContent = "Notifications unsupported"; btn.disabled = true; return; }
+    const p = Notification.permission;
+    btn.textContent = p === "granted" ? "Notifications on" : p === "denied" ? "Notifications blocked" : "Enable notifications";
+    btn.disabled = p !== "default";
+  }
+
+  // ---------- MQTT connection ----------
+  let client = null;
+  function setConn(state, text) {
+    $("conn").dataset.state = state;
+    $("connText").textContent = text;
+  }
+
+  function connect() {
+    if (client) { client.end(true); client = null; }
+    if (!config || !config.host) { setConn("idle", "Not configured"); return; }
+    if (typeof mqtt === "undefined") { setConn("error", "MQTT library failed to load (no internet?)"); return; }
+
+    // A full ws:// or wss:// URL may be entered as the host (handy for a local test broker).
+    const url = /^wss?:\/\//.test(config.host) ? config.host : `wss://${config.host}:${config.port}/mqtt`;
+    setConn("connecting", "Connecting…");
+    client = mqtt.connect(url, {
+      username: config.username || undefined,
+      password: config.password || undefined,
+      clientId: "posturepal-dashboard-" + Math.random().toString(16).slice(2, 10),
+      reconnectPeriod: 5000,
+      connectTimeout: 10000,
+      clean: true,
+    });
+    client.on("connect", () => {
+      setConn("connected", "Connected to broker");
+      client.subscribe(config.topic, { qos: 0 }, (err) => {
+        if (err) setConn("error", "Subscribe failed: " + err.message);
+      });
+    });
+    client.on("message", (_topic, payload) => handlePayload(payload.toString()));
+    client.on("reconnect", () => setConn("connecting", "Reconnecting…"));
+    client.on("offline", () => setConn("error", "Offline, retrying…"));
+    client.on("error", (err) => {
+      const msg = /not authori[sz]ed|bad user/i.test(err.message) ? "Wrong username or password" : err.message;
+      setConn("error", msg);
+    });
+  }
+
+  // ---------- Settings ----------
+  const dlg = $("settings"), form = $("settingsForm");
+  function openSettings() {
+    const c = config || DEFAULT_CONFIG;
+    form.host.value = c.host; form.port.value = c.port; form.username.value = c.username;
+    form.password.value = c.password; form.topic.value = c.topic; form.sound.checked = !!c.sound;
+    dlg.showModal();
+  }
+  form.addEventListener("submit", () => {
+    config = {
+      host: form.host.value.trim(),
+      port: Number(form.port.value) || 8884,
+      username: form.username.value.trim(),
+      password: form.password.value,
+      topic: form.topic.value.trim() || DEFAULT_CONFIG.topic,
+      sound: form.sound.checked,
+    };
+    save(KEY_CONFIG, config);
+    connect();
+  });
+  $("cancelSettings").addEventListener("click", () => dlg.close());
+  $("resetSettings").addEventListener("click", () => {
+    const c = DEFAULT_CONFIG;
+    form.host.value = c.host; form.port.value = c.port; form.username.value = "";
+    form.password.value = ""; form.topic.value = c.topic;
+  });
+  $("settingsBtn").addEventListener("click", openSettings);
+
+  $("notifyBtn").addEventListener("click", async () => {
+    await Notification.requestPermission();
+    renderNotifyBtn();
+  });
+  $("movedBtn").addEventListener("click", () => {
+    idleDismissedAt = Date.now();
+    save(KEY_IDLE_DISMISSED, idleDismissedAt);
+    render();
+  });
+  $("clearBtn").addEventListener("click", () => {
+    if (!confirm("Delete all saved PosturePal events from this browser?")) return;
+    events = [];
+    save(KEY_EVENTS, events);
+    render();
+  });
+  $("exportBtn").addEventListener("click", exportCsv);
+  $("chart").addEventListener("mousemove", showTip);
+  $("chart").addEventListener("mouseleave", () => { $("tip").style.display = "none"; });
+  window.addEventListener("resize", () => renderChart(Date.now()));
+  setInterval(render, 15000);
+
+  // Exposed for testing without a device: PosturePal.simulate('{"message":"Posture Corrected","angle":80}')
+  window.PosturePal = { simulate: (text) => handlePayload(text) };
+
+  renderNotifyBtn();
+  render();
+  connect();
+})();
+</script>
+</body>
+</html>
